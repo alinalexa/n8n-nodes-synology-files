@@ -4,19 +4,11 @@ import { NodeApiError } from 'n8n-workflow';
 export async function synoLogin(this: IExecuteFunctions): Promise<string> {
 	const cred = await this.getCredentials('synologyDsmApi');
 
-	// Optional health check
-	await this.helpers.httpRequest({
-		method: 'GET',
-		url: `${cred.baseUrl}/webapi/query.cgi`,
-		qs: { api: 'SYNO.API.Info', method: 'query', version: 1, query: 'all' },
-		json: true,
-	});
-
-	// Login to get SID
 	const auth = (await this.helpers.httpRequest({
-		method: 'GET',
+		method: 'POST',
 		url: `${cred.baseUrl}/webapi/auth.cgi`,
-		qs: {
+		headers: { Accept: 'application/json' },
+		form: {
 			api: 'SYNO.API.Auth',
 			method: 'login',
 			version: 7,
@@ -26,14 +18,26 @@ export async function synoLogin(this: IExecuteFunctions): Promise<string> {
 			format: 'sid',
 		},
 		json: true,
-	})) as IDataObject;
+		skipSslCertificateValidation: cred.allowSelfSigned as boolean,
+	} as IHttpRequestOptions)) as IDataObject;
 
 	if (!auth || auth['success'] !== true) {
-		// NodeApiError expects a JsonObject; cast safely
-		throw new NodeApiError(this.getNode(), auth as JsonObject, {
-			message: 'DSM login failed',
-		});
+		const authJson = (auth ?? {}) as JsonObject;
+
+		// Safely extract error.code if present
+		let code: number | string | undefined;
+		const err = authJson.error as JsonObject | undefined;
+		if (err && typeof err === 'object' && 'code' in err) {
+			const maybeCode = (err as Record<string, unknown>).code;
+			if (typeof maybeCode === 'number' || typeof maybeCode === 'string') {
+				code = maybeCode;
+			}
+		}
+
+		const message = `DSM login failed${code !== undefined ? ` (code ${code})` : ''}`;
+		throw new NodeApiError(this.getNode(), authJson, { message });
 	}
+
 	const data = auth['data'] as IDataObject;
 	return data['sid'] as string;
 }
