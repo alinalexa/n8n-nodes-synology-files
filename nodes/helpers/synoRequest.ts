@@ -1,47 +1,105 @@
-import type { IExecuteFunctions, IHttpRequestOptions, IDataObject, JsonObject } from 'n8n-workflow';
+// nodes/helpers/synoRequest.ts
+import type {
+	IExecuteFunctions,
+	IHttpRequestOptions,
+	IDataObject,
+	JsonObject,
+	JsonValue,
+} from 'n8n-workflow';
 import { NodeApiError } from 'n8n-workflow';
 
+/** Convert arbitrary input into a JsonValue (deep), coercing non-JSON types to string. */
+function toJsonValue(input: unknown): JsonValue {
+	if (
+		input === null ||
+		typeof input === 'string' ||
+		typeof input === 'number' ||
+		typeof input === 'boolean'
+	) {
+		return input as JsonValue;
+	}
+	if (Array.isArray(input)) {
+		return input.map((v) => toJsonValue(v)) as JsonValue;
+	}
+	if (typeof input === 'object') {
+		const out: JsonObject = {};
+		for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+			out[k] = toJsonValue(v);
+		}
+		return out;
+	}
+	// functions, symbols, undefined, etc.
+	return String(input) as JsonValue;
+}
+
+function isJsonObject(v: JsonValue): v is JsonObject {
+	return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** Safely coerce any value into a JsonObject for NodeApiError. */
+function asJsonObject(input: unknown): JsonObject {
+	const jv = toJsonValue(input);
+	if (isJsonObject(jv)) return jv;
+	return { value: jv };
+}
+
+/** Authenticate with Synology DSM and return a session ID (sid). */
 export async function synoLogin(this: IExecuteFunctions): Promise<string> {
 	const cred = await this.getCredentials('synologyDsmApi');
 
-	const auth = (await this.helpers.httpRequest({
+	// Build x-www-form-urlencoded body
+	const params = new URLSearchParams({
+		api: 'SYNO.API.Auth',
+		method: 'login',
+		version: '7',
+		account: String(cred.username),
+		passwd: String(cred.password),
+		session: 'FileStation',
+		format: 'sid',
+	}).toString();
+
+	const optsPost: IHttpRequestOptions = {
 		method: 'POST',
 		url: `${cred.baseUrl}/webapi/auth.cgi`,
-		headers: { Accept: 'application/json' },
-		form: {
-			api: 'SYNO.API.Auth',
-			method: 'login',
-			version: 7,
-			account: cred.username as string,
-			passwd: cred.password as string,
-			session: 'FileStation',
-			format: 'sid',
+		headers: {
+			Accept: 'application/json',
+			'Content-Type': 'application/x-www-form-urlencoded',
 		},
+		body: params,
 		json: true,
 		skipSslCertificateValidation: cred.allowSelfSigned as boolean,
-	} as IHttpRequestOptions)) as IDataObject;
+	};
 
-	if (!auth || auth['success'] !== true) {
-		const authJson = (auth ?? {}) as JsonObject;
+	try {
+		const auth = (await this.helpers.httpRequest(optsPost)) as IDataObject;
 
-		// Safely extract error.code if present
-		let code: number | string | undefined;
-		const err = authJson.error as JsonObject | undefined;
-		if (err && typeof err === 'object' && 'code' in err) {
-			const maybeCode = (err as Record<string, unknown>).code;
-			if (typeof maybeCode === 'number' || typeof maybeCode === 'string') {
-				code = maybeCode;
-			}
+		if (!auth || auth.success !== true) {
+			throw new NodeApiError(this.getNode(), asJsonObject(auth), {
+				message: 'DSM login failed',
+			});
 		}
 
-		const message = `DSM login failed${code !== undefined ? ` (code ${code})` : ''}`;
-		throw new NodeApiError(this.getNode(), authJson, { message });
-	}
+		const data = auth.data as IDataObject;
+		return data.sid as string;
+	} catch (originalError: unknown) {
+		// Retry without json to capture raw HTML if QuickConnect responds with non-JSON
+		try {
+			const rawOpts: IHttpRequestOptions = { ...optsPost };
+			delete (rawOpts as unknown as { json?: boolean }).json;
+			const raw = (await this.helpers.httpRequest(rawOpts)) as unknown as string;
 
-	const data = auth['data'] as IDataObject;
-	return data['sid'] as string;
+			throw new NodeApiError(this.getNode(), { raw } as JsonObject, {
+				message: 'DSM login failed (non-JSON response)',
+			});
+		} catch {
+			throw new NodeApiError(this.getNode(), asJsonObject(originalError), {
+				message: 'DSM login failed',
+			});
+		}
+	}
 }
 
+/** Perform a JSON request with an existing DSM session. */
 export async function synoRequestJson(
 	this: IExecuteFunctions,
 	sid: string,
@@ -49,16 +107,29 @@ export async function synoRequestJson(
 ): Promise<IDataObject> {
 	const cred = await this.getCredentials('synologyDsmApi');
 
+	const headers = {
+		Cookie: `id=${sid}`,
+		...(options.headers ?? {}),
+	};
+
 	const req: IHttpRequestOptions = {
 		method: 'GET',
 		json: true,
-		headers: { Cookie: `id=${sid}` },
+		skipSslCertificateValidation: cred.allowSelfSigned as boolean,
 		...options,
+		headers,
 		url: `${cred.baseUrl}${options.url}`,
 	};
-	return (await this.helpers.httpRequest(req)) as IDataObject;
+
+	try {
+		const response = (await this.helpers.httpRequest(req)) as IDataObject;
+		return response;
+	} catch (error: unknown) {
+		throw new NodeApiError(this.getNode(), asJsonObject(error));
+	}
 }
 
+/** Perform a binary (Buffer) request with an existing DSM session. */
 export async function synoRequestBinary(
 	this: IExecuteFunctions,
 	sid: string,
@@ -66,21 +137,30 @@ export async function synoRequestBinary(
 ): Promise<Buffer> {
 	const cred = await this.getCredentials('synologyDsmApi');
 
-	// Base typed object…
+	const headers = {
+		Cookie: `id=${sid}`,
+		...(options.headers ?? {}),
+	};
+
 	const req: IHttpRequestOptions = {
 		method: 'GET',
-		headers: { Cookie: `id=${sid}` },
+		skipSslCertificateValidation: cred.allowSelfSigned as boolean,
 		...options,
+		headers,
 		url: `${cred.baseUrl}${options.url}`,
 	};
 
-	// …then add runtime-only flag via cast (avoids TS errors in older typings)
+	// Ask for a Buffer (n8n-compatible across versions)
 	(req as unknown as { encoding: null }).encoding = null;
 
-	const res = (await this.helpers.httpRequest(req)) as unknown as Buffer;
-	return res;
+	try {
+		return (await this.helpers.httpRequest(req)) as unknown as Buffer;
+	} catch (error: unknown) {
+		throw new NodeApiError(this.getNode(), asJsonObject(error));
+	}
 }
 
+/** Upload a file using multipart/form-data with an existing DSM session. */
 type MultipartFileField = { value: Buffer; options: { filename: string } };
 type MultipartFormData = Record<string, string | number | boolean | MultipartFileField>;
 
@@ -99,7 +179,6 @@ export async function synoPostMultipart(
 	const cred = await this.getCredentials('synologyDsmApi');
 	const { url, qs, fields, fileField, fileBuffer, filename } = options;
 
-	// Build formData with file LAST
 	const formData: MultipartFormData = {
 		...(fields ?? {}),
 		[fileField]: { value: fileBuffer, options: { filename } },
@@ -111,10 +190,15 @@ export async function synoPostMultipart(
 		qs,
 		headers: { Cookie: `id=${sid}` },
 		json: true,
+		skipSslCertificateValidation: cred.allowSelfSigned as boolean,
 	};
 
-	// attach multipart body via cast to keep TS happy across n8n versions
+	// Attach multipart data (supported at runtime)
 	(req as unknown as { formData: MultipartFormData }).formData = formData;
 
-	return (await this.helpers.httpRequest(req)) as IDataObject;
+	try {
+		return (await this.helpers.httpRequest(req)) as IDataObject;
+	} catch (error: unknown) {
+		throw new NodeApiError(this.getNode(), asJsonObject(error));
+	}
 }
