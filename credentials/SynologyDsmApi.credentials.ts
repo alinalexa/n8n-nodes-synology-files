@@ -15,7 +15,7 @@ export class SynologyDsmApi implements ICredentialType {
 			displayName: 'Base URL',
 			name: 'baseUrl',
 			type: 'string',
-			default: 'https://ddd.quickconnect.to',
+			default: 'https://your-nas.quickconnect.to',
 			placeholder: 'https://your-nas:5001',
 			description: 'QuickConnect/DDNS/VPN base URL.',
 		},
