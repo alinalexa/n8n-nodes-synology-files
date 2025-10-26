@@ -30,7 +30,7 @@
         "n8nNodesApiVersion": 1,
         "strict": true,
         "credentials": [
-            "dist/credentials/SynologyDsmApi.credentials.ts"
+            "dist/credentials/SynologyDsmApi.credentials.js"
         ],
         "nodes": [
             "dist/nodes/SynologyFileStation/SynologyFileStation.node.js"
