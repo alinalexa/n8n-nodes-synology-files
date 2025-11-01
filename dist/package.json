@@ -1,0 +1,50 @@
+{
+    "name": "n8n-nodes-synology-files",
+    "version": "1.0.3",
+    "author": {
+        "name": "Alin Alexa"
+    },
+    "description": "n8n node for Synology File Station integration",
+    "keywords": [
+        "n8n-community-node",
+        "n8n-community-node-package",
+        "synology",
+        "filestation",
+        "dsm"
+    ],
+    "license": "MIT",
+    "main": "dist/index.js",
+    "scripts": {
+        "build": "n8n-node build",
+        "build:watch": "tsc --watch",
+        "dev": "n8n-node dev",
+        "lint": "n8n-node lint",
+        "lint:fix": "n8n-node lint --fix",
+        "release": "n8n-node release",
+        "prepublishOnly": "n8n-node prerelease"
+    },
+    "files": [
+        "dist"
+    ],
+    "n8n": {
+        "n8nNodesApiVersion": 1,
+        "strict": true,
+        "credentials": [
+            "dist/credentials/SynologyDsmApi.credentials.js"
+        ],
+        "nodes": [
+            "dist/nodes/SynologyFileStation/SynologyFileStation.node.js"
+        ]
+    },
+    "devDependencies": {
+        "@n8n/node-cli": "^0.13.0",
+        "@types/node": "^24.9.1",
+        "eslint": "9.32.0",
+        "prettier": "3.6.2",
+        "release-it": "^19.0.4",
+        "typescript": "5.9.2"
+    },
+    "peerDependencies": {
+        "n8n-workflow": "*"
+    }
+}
